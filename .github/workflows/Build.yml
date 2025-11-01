@@ -8,6 +8,7 @@ on:
 env:
   AWS_REGION: eu-north-1
   IMAGE_REPO: my-simple-app
+  ECR_REGISTRY: 332427206046.dkr.ecr.eu-north-1.amazonaws.com
 
 jobs:
   build-and-deploy:
@@ -30,23 +31,25 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # 4️⃣ Log in to Amazon ECR
+      # 4️⃣ Login to Amazon ECR
       - name: Login to Amazon ECR
         run: |
+          echo "Logging in to ECR: ${{ env.ECR_REGISTRY }}"
           aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
-          docker login --username AWS --password-stdin $(echo "${{ secrets.ECR_REGISTRY }}" | tr -d '\n' | tr -d '\r')
-      # 5️⃣ Build and push Docker image (unique tag per commit)
+            docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+
+      # 5️⃣ Build and push Docker image
       - name: Build and push Docker image
         run: |
-          ECR_REGISTRY=$(echo "${{ secrets.ECR_REGISTRY }}" | tr -d '\n' | tr -d '\r')
           IMAGE_TAG=${{ github.sha }}
-          IMAGE_NAME="${ECR_REGISTRY}/${{ env.IMAGE_REPO }}:$IMAGE_TAG"
-          echo "Building image: $IMAGE_NAME"
+          IMAGE_NAME="${{ env.ECR_REGISTRY }}/${{ env.IMAGE_REPO }}:$IMAGE_TAG"
+          echo "Building and pushing image: $IMAGE_NAME"
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             -t "$IMAGE_NAME" \
             --push .
           echo "IMAGE_URI=$IMAGE_NAME" >> $GITHUB_ENV
+
       # 6️⃣ Set up kubectl
       - name: Set up kubectl
         uses: azure/setup-kubectl@v3
@@ -58,13 +61,15 @@ jobs:
         run: |
           aws eks update-kubeconfig --name my-eks-cluster --region ${{ env.AWS_REGION }}
           kubectl get nodes
+
       # 8️⃣ Deploy to EKS with new image
       - name: Deploy to EKS
         run: |
           echo "Updating deployment with image: $IMAGE_URI"
-          kubectl set image deployment/my-simple-app my-simple-app=$IMAGE_URI
+          kubectl set image deployment/${{ env.IMAGE_REPO }} ${{ env.IMAGE_REPO }}=$IMAGE_URI
           echo "Waiting for rollout..."
-          kubectl rollout status deployment/my-simple-app
+          kubectl rollout status deployment/${{ env.IMAGE_REPO }}
+
       # 9️⃣ Verify pods
       - name: Verify pods
         run: kubectl get pods -o wide
@@ -73,14 +78,16 @@ jobs:
       - name: Get LoadBalancer URL
         id: get-url
         run: |
-          URL=$(kubectl get svc my-simple-app-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          URL=$(kubectl get svc ${{ env.IMAGE_REPO }}-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
           echo "Live URL: http://$URL"
           echo "url=http://$URL" >> $GITHUB_OUTPUT
+
       # 11️⃣ Show live application link
       - name: Show live application link
         run: |
           echo "✅ Your app is live at:"
           echo "${{ steps.get-url.outputs.url }}"
+
       # 12️⃣ Cleanup
       - name: Cleanup
         run: docker image prune -af
