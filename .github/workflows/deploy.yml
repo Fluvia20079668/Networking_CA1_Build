@@ -1,66 +1,20 @@
-name: Terraform + Build & Deploy
+name: Build & Deploy
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
 
 jobs:
-  terraform:
-    name: Terraform Apply
-    runs-on: ubuntu-latest
-    outputs:
-      ECR_URL: ${{ steps.tfoutputs.outputs.ECR_URL }}
-      EKS_NAME: ${{ steps.tfoutputs.outputs.EKS_NAME }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
-        with:
-          terraform_version: 1.6.0
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: eu-north-1
-
-      - name: Terraform Init
-        working-directory: infra
-        run: terraform init -input=false
-
-      - name: Terraform Plan
-        working-directory: infra
-        run: terraform plan -out=tfplan -input=false
-
-      - name: Terraform Apply
-        working-directory: infra
-        run: terraform apply -input=false -auto-approve tfplan
-
-      - name: Get Terraform outputs
-        id: tfoutputs
-        working-directory: infra
-        run: |
-          # Trim any hidden characters
-          ECR_URL=$(terraform output -raw ecr_repository_url | tr -d '\n' | tr -d '\r')
-          EKS_NAME=$(terraform output -raw eks_cluster_name | tr -d '\n' | tr -d '\r')
-          echo "::set-output name=ECR_URL::$ECR_URL"
-          echo "::set-output name=EKS_NAME::$EKS_NAME"
-
   build-and-deploy:
-    name: Build Docker & Deploy
+    name: Build Docker & Deploy to EKS
     runs-on: ubuntu-latest
-    needs: terraform
     env:
       AWS_REGION: eu-north-1
       IMAGE_REPO: my-simple-app
-      IMAGE_TAG: latest
-      ECR_URL: ${{ needs.terraform.outputs.ECR_URL }}
-      EKS_NAME: ${{ needs.terraform.outputs.EKS_NAME }}
+      NAMESPACE: my-app-namespace
+      ECR_URL: ${{ secrets.ECR_URL }}      # Existing ECR repository URL
+      EKS_NAME: ${{ secrets.EKS_NAME }}    # Existing EKS cluster name
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -81,7 +35,8 @@ jobs:
 
       - name: Build & Push Docker Image
         run: |
-          IMAGE_NAME="${{ env.ECR_URL }}/${{ env.IMAGE_REPO }}:${GITHUB_SHA}"
+          IMAGE_TAG=${GITHUB_SHA::7}  # Short SHA for tag
+          IMAGE_NAME="${{ env.ECR_URL }}/${{ env.IMAGE_REPO }}:$IMAGE_TAG"
           echo "Building image: $IMAGE_NAME"
           docker buildx build --platform linux/amd64,linux/arm64 -t "$IMAGE_NAME" --push .
           echo "IMAGE_URI=$IMAGE_NAME" >> $GITHUB_ENV
@@ -93,24 +48,35 @@ jobs:
 
       - name: Configure kubeconfig
         run: |
-          echo "Configuring kubeconfig for cluster: ${{ env.EKS_NAME }}"
           aws eks update-kubeconfig --name ${{ env.EKS_NAME }} --region ${{ env.AWS_REGION }}
           kubectl config get-contexts
           kubectl get nodes
 
+      - name: Ensure Namespace Exists
+        run: |
+          kubectl get namespace ${{ env.NAMESPACE }} || kubectl create namespace ${{ env.NAMESPACE }}
+
       - name: Deploy to EKS
         run: |
+          DEPLOYMENT_NAME=my-simple-app
+          kubectl -n ${{ env.NAMESPACE }} get deployment $DEPLOYMENT_NAME || kubectl create deployment $DEPLOYMENT_NAME --image=$IMAGE_URI -n ${{ env.NAMESPACE }}
           echo "Updating deployment with image: $IMAGE_URI"
-          kubectl set image deployment/my-simple-app my-simple-app=$IMAGE_URI
-          kubectl rollout status deployment/my-simple-app
+          kubectl -n ${{ env.NAMESPACE }} set image deployment/$DEPLOYMENT_NAME $DEPLOYMENT_NAME=$IMAGE_URI
+          kubectl -n ${{ env.NAMESPACE }} rollout status deployment/$DEPLOYMENT_NAME
 
       - name: Verify Pods
-        run: kubectl get pods -o wide
+        run: kubectl -n ${{ env.NAMESPACE }} get pods -o wide
+
+      - name: Expose Service if not exists
+        run: |
+          SERVICE_NAME=my-simple-app-service
+          kubectl -n ${{ env.NAMESPACE }} get svc $SERVICE_NAME || \
+          kubectl -n ${{ env.NAMESPACE }} expose deployment my-simple-app --type=LoadBalancer --name=$SERVICE_NAME --port=80 --target-port=80
 
       - name: Get LoadBalancer URL
         id: get-url
         run: |
-          URL=$(kubectl get svc my-simple-app-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          URL=$(kubectl -n ${{ env.NAMESPACE }} get svc my-simple-app-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
           echo "url=http://$URL" >> $GITHUB_OUTPUT
 
       - name: Show live application link
