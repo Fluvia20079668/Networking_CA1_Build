@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout code
+      # 1️⃣ Checkout source code
       - name: Checkout source code
         uses: actions/checkout@v4
 
@@ -47,7 +47,7 @@ jobs:
           aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
             docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
 
-      # 6️⃣ Build and push Docker image
+      # 6️⃣ Build and push Docker image (FIXED)
       - name: Build and push Docker image
         run: |
           IMAGE_TAG=${{ github.sha }}
@@ -55,8 +55,9 @@ jobs:
           echo "Building and pushing image: $IMAGE_NAME"
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
+            -f With_terraform/Networking_CA1_Build/Dockerfile \
             -t "$IMAGE_NAME" \
-            --push .
+            --push With_terraform/Networking_CA1_Build
           echo "IMAGE_URI=$IMAGE_NAME" >> $GITHUB_ENV
 
       # 7️⃣ Set up kubectl
