@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout source code
+      # 1️⃣ Checkout code
       - name: Checkout source code
         uses: actions/checkout@v4
 
@@ -39,15 +39,13 @@ jobs:
           aws ecr describe-repositories --repository-names ${{ env.IMAGE_REPO }} >/dev/null 2>&1 || \
           aws ecr create-repository --repository-name ${{ env.IMAGE_REPO }}
           echo "ECR repository ${{ env.IMAGE_REPO }} is ready."
-
       # 5️⃣ Login to Amazon ECR
       - name: Login to Amazon ECR
         run: |
           echo "Logging in to ECR: ${{ env.ECR_REGISTRY }}"
           aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
             docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
-
-      # 6️⃣ Build and push Docker image (FIXED)
+      # 6️⃣ Build and push Docker image
       - name: Build and push Docker image
         run: |
           IMAGE_TAG=${{ github.sha }}
@@ -55,11 +53,9 @@ jobs:
           echo "Building and pushing image: $IMAGE_NAME"
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
-            -f With_terraform/Networking_CA1_Build/Dockerfile \
             -t "$IMAGE_NAME" \
-            --push With_terraform/Networking_CA1_Build
+            --push .
           echo "IMAGE_URI=$IMAGE_NAME" >> $GITHUB_ENV
-
       # 7️⃣ Set up kubectl
       - name: Set up kubectl
         uses: azure/setup-kubectl@v3
@@ -71,7 +67,6 @@ jobs:
         run: |
           aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
           kubectl get nodes
-
       # 9️⃣ Ensure Kubernetes deployment exists
       - name: Create deployment if not exists
         run: |
@@ -80,7 +75,6 @@ jobs:
             kubectl create deployment ${{ env.IMAGE_REPO }} \
               --image=$IMAGE_URI -n ${{ env.K8S_NAMESPACE }}
           fi
-
       # 🔟 Ensure service exists
       - name: Create service if not exists
         run: |
@@ -89,7 +83,6 @@ jobs:
             kubectl expose deployment ${{ env.IMAGE_REPO }} \
               --type=LoadBalancer --name=${{ env.IMAGE_REPO }}-service -n ${{ env.K8S_NAMESPACE }}
           fi
-
       # 11️⃣ Update deployment with new image
       - name: Deploy to EKS
         run: |
@@ -98,7 +91,6 @@ jobs:
             ${{ env.IMAGE_REPO }}=$IMAGE_URI -n ${{ env.K8S_NAMESPACE }}
           echo "Waiting for rollout..."
           kubectl rollout status deployment/${{ env.IMAGE_REPO }} -n ${{ env.K8S_NAMESPACE }}
-
       # 12️⃣ Verify pods
       - name: Verify pods
         run: kubectl get pods -o wide -n ${{ env.K8S_NAMESPACE }}
@@ -111,13 +103,11 @@ jobs:
                 -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
           echo "Live URL: http://$URL"
           echo "url=http://$URL" >> $GITHUB_OUTPUT
-
       # 14️⃣ Show live application link
       - name: Show live application link
         run: |
           echo "✅ Your app is live at:"
           echo "${{ steps.get-url.outputs.url }}"
-
       # 15️⃣ Cleanup
       - name: Cleanup
         run: docker image prune -af
